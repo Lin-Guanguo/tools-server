@@ -17,6 +17,7 @@ async fn execute(
     headers: warp::hyper::HeaderMap,
     body: warp::hyper::body::Bytes,
 ) -> Result<String, warp::Rejection> {
+    let mut body = body.as_ref();
     let args = headers
         .get_all("args")
         .into_iter()
@@ -24,7 +25,9 @@ async fn execute(
         .flat_map(|s| shell_words::split(s).unwrap())
         .map(|s| {
             if s == "$body" {
-                String::from_utf8_lossy(&body).into()
+                let (head, tail) = split_blank_line(body);
+                body = tail;
+                String::from_utf8_lossy(&head).into()
             } else {
                 s
             }
@@ -33,7 +36,10 @@ async fn execute(
 
     println!(
         " === accpet command === \napp: {} \nheaders {:?} \nbody: {:?}\nargs: {:?}",
-        app, headers, body, args
+        app,
+        headers,
+        String::from_utf8_lossy(body),
+        args
     );
 
     let start = std::time::Instant::now();
@@ -44,21 +50,29 @@ async fn execute(
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(body.as_ref())
-        .await
-        .unwrap();
+    child.stdin.as_mut().unwrap().write_all(body).await.unwrap();
     let out = child.output().await.unwrap();
     let end = std::time::Instant::now();
 
     Ok(format!(
-        "status: {}\n\ntime: {}ms\n\nstdout: {}\n\nstderr: {}\n",
+        "status: {}\ntime: {}ms\n\nstdout:\n{}\n\nstderr:\n{}\n",
         &out.status.to_string(),
         (end - start).as_millis(),
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
     ))
+}
+
+fn split_blank_line<'a, T>(input: &'a T) -> (&'a [u8], &'a [u8])
+where
+    T: AsRef<[u8]> + ?Sized + 'a,
+{
+    let input = input.as_ref();
+    let pos = input.windows(2).position(|x| x == b"\n\n");
+    if let Some(pos) = pos {
+        let (head, tail) = input.split_at(pos);
+        (head, &tail[2..])
+    } else {
+        (input, &[] as &[u8])
+    }
 }
