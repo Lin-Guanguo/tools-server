@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use async_process::{Command, Stdio};
 use futures::AsyncWriteExt;
 use warp::Filter;
@@ -5,6 +7,7 @@ use warp::Filter;
 #[tokio::main]
 async fn main() {
     let hello = warp::path!("command" / String)
+        .and(warp::query::<HashMap<String, String>>())
         .and(warp::header::headers_cloned())
         .and(warp::body::bytes())
         .and_then(execute);
@@ -14,6 +17,7 @@ async fn main() {
 
 async fn execute(
     app: String,
+    query: HashMap<String, String>,
     headers: warp::hyper::HeaderMap,
     body: warp::hyper::body::Bytes,
 ) -> Result<String, warp::Rejection> {
@@ -35,8 +39,9 @@ async fn execute(
         .collect::<Vec<_>>();
 
     println!(
-        " === accpet command === \napp: {} \nheaders {:?} \nbody: {:?}\nargs: {:?}",
+        " === accpet command === \napp: {} \nquery: {:?}\nheaders: {:?} \nbody: {:?}\nargs: {:?}",
         app,
+        query,
         headers,
         String::from_utf8_lossy(body),
         args
@@ -65,7 +70,7 @@ async fn execute(
 
 fn split_blank_line<'a, T>(input: &'a T) -> (&'a [u8], &'a [u8])
 where
-    T: AsRef<[u8]> + ?Sized + 'a,
+    T: AsRef<[u8]> + ?Sized,
 {
     let input = input.as_ref();
     let pos = input.windows(2).position(|x| x == b"\n\n");
