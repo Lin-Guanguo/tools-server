@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use async_process::{Command, Stdio};
 use futures::AsyncWriteExt;
-use warp::Filter;
+use warp::{hyper::body::Bytes, Filter};
 
 #[tokio::main]
 async fn main() {
@@ -19,9 +19,8 @@ async fn execute(
     app: String,
     query: HashMap<String, String>,
     headers: warp::hyper::HeaderMap,
-    body: warp::hyper::body::Bytes,
+    mut body: Bytes,
 ) -> Result<String, warp::Rejection> {
-    let mut body = body.as_ref();
     let args = headers
         .get_all("args")
         .into_iter()
@@ -29,7 +28,7 @@ async fn execute(
         .flat_map(|s| shell_words::split(s).unwrap())
         .map(|s| match s.as_str() {
             "$body" => {
-                let (head, tail) = split_blank_line(body);
+                let (head, tail) = split_blank_line(body.clone());
                 body = tail;
                 String::from_utf8_lossy(&head).to_string()
             }
@@ -43,7 +42,7 @@ async fn execute(
         app,
         query,
         headers,
-        String::from_utf8_lossy(body),
+        String::from_utf8_lossy(&body),
         args
     );
 
@@ -55,7 +54,13 @@ async fn execute(
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.as_mut().unwrap().write_all(body).await.unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(&body)
+        .await
+        .unwrap();
     let out = child.output().await.unwrap();
     let end = std::time::Instant::now();
 
@@ -68,16 +73,12 @@ async fn execute(
     ))
 }
 
-fn split_blank_line<'a, T>(input: &'a T) -> (&'a [u8], &'a [u8])
-where
-    T: AsRef<[u8]> + ?Sized,
-{
-    let input = input.as_ref();
+fn split_blank_line(mut input: Bytes) -> (Bytes, Bytes) {
     let pos = input.windows(2).position(|x| x == b"\n\n");
     if let Some(pos) = pos {
-        let (head, tail) = input.split_at(pos);
-        (head, &tail[2..])
+        let mut tail = input.split_off(pos);
+        (input, tail.split_off(2))
     } else {
-        (input, &[] as &[u8])
+        (input, Bytes::new())
     }
 }
