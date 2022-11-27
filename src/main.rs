@@ -20,30 +20,35 @@ async fn execute(
     query: HashMap<String, String>,
     headers: warp::hyper::HeaderMap,
     mut body: Bytes,
-) -> Result<String, warp::Rejection> {
-    let args = headers
-        .get_all("args")
-        .into_iter()
-        .flat_map(|h| h.to_str().unwrap().split(','))
-        .flat_map(|s| shell_words::split(s).unwrap())
-        .map(|s| match s.as_str() {
-            "$body" => {
-                let (head, tail) = split_blank_line(body.clone());
-                body = tail;
-                String::from_utf8_lossy(&head).to_string()
-            }
-            key if s.starts_with('$') => query.get(&key[1..]).cloned().unwrap_or(s),
-            _ => s,
-        })
-        .collect::<Vec<_>>();
+) -> Result<ExecuteReply, warp::Rejection> {
+    let mut parse_header_args = |h: &str| {
+        headers
+            .get_all(h)
+            .into_iter()
+            .flat_map(|h| h.to_str().unwrap().split(','))
+            .flat_map(|s| shell_words::split(s).unwrap())
+            .map(|s| match s.as_str() {
+                "$body" => {
+                    let (head, tail) = split_blank_line(body.clone());
+                    body = tail;
+                    String::from_utf8_lossy(&head).to_string()
+                }
+                key if s.starts_with('$') => query.get(&key[1..]).cloned().unwrap_or(s),
+                _ => s,
+            })
+            .collect::<Vec<_>>()
+    };
+    let args = parse_header_args("args");
+    let opts = parse_header_args("opts");
 
     println!(
-        " === accpet command === \napp: {} \nquery: {:?}\nheaders: {:?} \nbody: {:?}\nargs: {:?}",
+        " === accpet command === \napp: {}\nquery: {:?}\nheaders: {:?} \nbody: {:?}\nargs: {:?}\nopts: {:?}",
         app,
         query,
         headers,
         String::from_utf8_lossy(&body),
-        args
+        args,
+        opts
     );
 
     let start = std::time::Instant::now();
@@ -64,13 +69,33 @@ async fn execute(
     let out = child.output().await.unwrap();
     let end = std::time::Instant::now();
 
-    Ok(format!(
-        "status: {}\ntime: {}ms\n\nstdout:\n{}\n\nstderr:\n{}\n",
-        &out.status.to_string(),
-        (end - start).as_millis(),
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr),
-    ))
+    if let Some(_) = opts.iter().find(|s| *s == "stdout") {
+        Ok(ExecuteReply::Binary(out.stdout))
+    } else if let Some(_) = opts.iter().find(|s| *s == "stderr") {
+        Ok(ExecuteReply::Binary(out.stderr))
+    } else {
+        Ok(ExecuteReply::UTF8(format!(
+            "status: {}\ntime: {}ms\n\nstdout:\n{}\n\nstderr:\n{}\n",
+            &out.status.to_string(),
+            (end - start).as_millis(),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        )))
+    }
+}
+
+enum ExecuteReply {
+    UTF8(String),
+    Binary(Vec<u8>),
+}
+
+impl warp::Reply for ExecuteReply {
+    fn into_response(self) -> warp::reply::Response {
+        match self {
+            ExecuteReply::UTF8(x) => x.into_response(),
+            ExecuteReply::Binary(x) => x.into_response(),
+        }
+    }
 }
 
 fn split_blank_line(mut input: Bytes) -> (Bytes, Bytes) {
