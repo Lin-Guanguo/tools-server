@@ -10,7 +10,7 @@ async fn main() {
         .and(warp::query::<HashMap<String, String>>())
         .and(warp::header::headers_cloned())
         .and(warp::body::bytes())
-        .and_then(execute);
+        .then(execute);
 
     warp::serve(hello).run(([0, 0, 0, 0], 3030)).await;
 }
@@ -20,7 +20,7 @@ async fn execute(
     query: HashMap<String, String>,
     headers: warp::hyper::HeaderMap,
     mut body: Bytes,
-) -> Result<ExecuteReply, warp::Rejection> {
+) -> ExecuteReply {
     let mut parse_header_args = |h: &str| {
         headers
             .get_all(h)
@@ -70,17 +70,17 @@ async fn execute(
     let end = std::time::Instant::now();
 
     if let Some(_) = opts.iter().find(|s| *s == "stdout") {
-        Ok(ExecuteReply::Binary(out.stdout))
+        ExecuteReply::Binary(out.stdout)
     } else if let Some(_) = opts.iter().find(|s| *s == "stderr") {
-        Ok(ExecuteReply::Binary(out.stderr))
+        ExecuteReply::Binary(out.stderr)
     } else {
-        Ok(ExecuteReply::UTF8(format!(
+        ExecuteReply::UTF8(format!(
             "status: {}\ntime: {}ms\n\nstdout:\n{}\n\nstderr:\n{}\n",
             &out.status.to_string(),
             (end - start).as_millis(),
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr),
-        )))
+        ))
     }
 }
 
