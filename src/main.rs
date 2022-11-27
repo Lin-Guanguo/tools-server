@@ -27,14 +27,14 @@ async fn execute(
         .into_iter()
         .flat_map(|h| h.to_str().unwrap().split(','))
         .flat_map(|s| shell_words::split(s).unwrap())
-        .map(|s| {
-            if s == "$body" {
+        .map(|s| match s.as_str() {
+            "$body" => {
                 let (head, tail) = split_blank_line(body);
                 body = tail;
-                String::from_utf8_lossy(&head).into()
-            } else {
-                s
+                String::from_utf8_lossy(&head).to_string()
             }
+            key if s.starts_with('$') => query.get(&key[1..]).cloned().unwrap_or(s),
+            _ => s,
         })
         .collect::<Vec<_>>();
 
