@@ -13,7 +13,14 @@ async fn main() {
         .and(warp::body::bytes())
         .then(execute);
 
-    warp::serve(hello).run(([0, 0, 0, 0], 3030)).await;
+    let echo = warp::path("echo")
+        .and(warp::path::full())
+        .and(warp::query::<HashMap<String, String>>())
+        .and(warp::header::headers_cloned())
+        .and(warp::body::bytes())
+        .then(echo);
+
+    warp::serve(hello.or(echo)).run(([0, 0, 0, 0], 3030)).await;
 }
 
 async fn execute(
@@ -40,20 +47,17 @@ async fn execute(
     let mut body = body;
     header_vars
         .iter()
-        .map(|s| {
-            let mut i = s.split("=");
-            (i.next(), i.next())
-        })
+        .map(|s| s.split_once("="))
         .for_each(|kv| match kv {
             // TODO: approve body vars
-            (Some(k), Some("body")) => {
+            Some((k, "body")) => {
                 let (head, tail) = split_blank_line(body.clone());
                 body = tail;
                 let v = String::from_utf8_lossy(&head);
                 let v = replace_variable(&vars, &v);
                 vars.insert(k.to_string(), v.to_string());
             }
-            (Some(k), Some(v)) => {
+            Some((k, v)) => {
                 vars.insert(k.to_string(), v.to_string());
             }
             _ => {}
@@ -115,6 +119,23 @@ async fn execute(
     }
 }
 
+async fn echo(
+    path: warp::path::FullPath,
+    query: HashMap<String, String>,
+    headers: warp::hyper::HeaderMap,
+    body: Bytes,
+) -> ExecuteReply {
+    let reply = format!(
+        "path: {}\n\nquery: {:#?}\n\nheaders: {:#?}\n\nbody:\n{}\n\n",
+        path.as_str(),
+        query,
+        headers,
+        String::from_utf8_lossy(body.as_ref())
+    );
+    println!(" === accpet echo === \n{}", reply);
+    ExecuteReply::UTF8(reply)
+}
+
 enum ExecuteReply {
     UTF8(String),
     Binary(Vec<u8>),
@@ -168,7 +189,7 @@ fn replace_variable<'a>(
             let input = input.as_ref();
             match fname.as_str() {
                 "base64" => base64(input),
-                fname => format!("${{{}{})}}", fname, input),
+                fname => format!("${{{}({})}}", fname, input),
             }
         } else {
             panic!("inner error")
@@ -181,4 +202,6 @@ fn base64(input: &str) -> String {
 }
 
 #[test]
-fn test() {}
+fn test() {
+    // TODO: more test
+}
