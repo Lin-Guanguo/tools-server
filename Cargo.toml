@@ -1,5 +1,5 @@
 [package]
-name = "command-executor-http"
+name = "tools-server"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,9 +8,11 @@ edition = "2021"
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
+hyper = "0.14"
 warp = "0.3"
 async-process = "1.5"
 shell-words = "1.1"
 regex = "1"
 lazy_static = "1"
-base64 = "0.13"
+base64 = "0.20"
+bytes = "1"
