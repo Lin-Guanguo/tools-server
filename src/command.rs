@@ -14,6 +14,14 @@ pub async fn command(
     headers: HeaderMap,
     body: Bytes,
 ) -> Reply {
+    println!(
+        " === accpet command === \napp: {}\nquery: {:?}\nheaders: {:?} \nbody: {:?}",
+        app,
+        query,
+        headers,
+        String::from_utf8_lossy(&body),
+    );
+
     let parse_header_args = |h: &str, vars: &HashMap<String, String>| {
         headers
             .get_all(h)
@@ -24,50 +32,34 @@ pub async fn command(
             .collect::<Vec<_>>()
     };
 
-    // query vars
+    // parse variables
     let mut vars = query;
-
-    // header vars
-    let header_vars = parse_header_args("vars", &vars);
+    vars.extend(
+        parse_header_args("vars", &vars)
+            .iter()
+            .map(|s| s.split_once("="))
+            .filter_map(|kv| kv.map(|(k, v)| (k.to_string(), v.to_string()))),
+    );
     let mut body = body;
-    header_vars
-        .iter()
-        .map(|s| s.split_once("="))
-        .for_each(|kv| match kv {
-            // TODO: approve body vars
-            Some((k, "body")) => {
-                let (head, tail) = split_blank_line(body.clone());
-                body = tail;
-                let v = String::from_utf8_lossy(&head);
-                let v = replace_variable(&vars, &v);
-                vars.insert(k.to_string(), v.to_string());
-            }
-            Some((k, v)) => {
-                vars.insert(k.to_string(), v.to_string());
-            }
-            _ => {}
-        });
+    let vars_copy = vars.clone();
+    vars.iter_mut().for_each(|(_, v)| {
+        if v.as_str() == "body" {
+            let (head, tail) = split_blank_line(body.clone());
+            body = tail;
+            *v = replace_variable(&vars_copy, String::from_utf8_lossy(&head).as_ref()).to_string();
+        }
+    });
 
     let args = parse_header_args("args", &vars);
     let opts = parse_header_args("opts", &vars);
+    let opts = CommandOpt::from_opts(opts);
 
-    // parse-body
-    if let Some(_) = opts.iter().find(|s| *s == "parse-body") {
+    if opts.parse_body {
         let body2 = String::from_utf8_lossy(&body);
         let body2 = replace_variable(&vars, &body2);
         let body2 = Bytes::from(body2.to_string());
         body = body2
     }
-
-    println!(
-        " === accpet command === \napp: {}\nvars: {:?}\nheaders: {:?} \nbody: {:?}\nargs: {:?}\nopts: {:?}",
-        app,
-        vars,
-        headers,
-        String::from_utf8_lossy(&body),
-        args,
-        opts
-    );
 
     // start execute
     let start = std::time::Instant::now();
@@ -85,22 +77,69 @@ pub async fn command(
         .write_all(&body)
         .await
         .unwrap();
-    let out = child.output().await.unwrap();
+    let async_process::Output {
+        status,
+        stdout,
+        stderr,
+    } = child.output().await.unwrap();
     let end = std::time::Instant::now();
 
     // reply
-    if let Some(_) = opts.iter().find(|s| *s == "stdout") {
-        Reply::Binary(out.stdout)
-    } else if let Some(_) = opts.iter().find(|s| *s == "stderr") {
-        Reply::Binary(out.stderr)
-    } else {
-        Reply::UTF8(format!(
+    match opts.output_format {
+        RespFormat::Stdout => Reply::Binary(stdout),
+        RespFormat::Stderr => Reply::Binary(stderr),
+        RespFormat::Stdall => Reply::Binary({
+            let (mut stdout, mut stderr) = (stdout, stderr);
+            stdout.push(b'\n');
+            stdout.push(b'\n');
+            stdout.append(&mut stderr);
+            stdout
+        }),
+        RespFormat::Format => Reply::UTF8(format!(
             "status: {}\ntime: {}ms\n\nstdout:\n{}\n\nstderr:\n{}\n",
-            &out.status.to_string(),
+            status,
             (end - start).as_millis(),
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr),
-        ))
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr),
+        )),
+    }
+}
+
+enum RespFormat {
+    Stdout,
+    Stderr,
+    Stdall,
+    Format,
+}
+
+struct CommandOpt {
+    parse_body: bool,
+    output_format: RespFormat,
+    unknown_opts: Vec<String>,
+}
+
+impl Default for CommandOpt {
+    fn default() -> Self {
+        Self {
+            parse_body: false,
+            output_format: RespFormat::Format,
+            unknown_opts: Vec::new(),
+        }
+    }
+}
+
+impl CommandOpt {
+    fn from_opts(opts: Vec<String>) -> CommandOpt {
+        let mut opt = Self::default();
+        opts.into_iter().for_each(|o| match o.as_str() {
+            "parse-body" => opt.parse_body = true,
+            "stdout" => opt.output_format = RespFormat::Stdout,
+            "stderr" => opt.output_format = RespFormat::Stderr,
+            "stdall" => opt.output_format = RespFormat::Stdall,
+            "format" => opt.output_format = RespFormat::Format,
+            _ => opt.unknown_opts.push(o),
+        });
+        opt
     }
 }
 
