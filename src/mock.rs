@@ -1,5 +1,6 @@
 use bstr::{BString, ByteSlice};
 use rlua::Lua;
+use std::ffi::OsStr;
 use std::os::unix::prelude::OsStrExt;
 use std::{collections::HashMap, path::Path};
 use tokio::fs;
@@ -54,21 +55,29 @@ async fn mock_inner(
         &path_split[2..], /* skip "" and "mock" */
     )
     .await?;
-    let reply = execute_mock(find, path, path_param, query, headers, body).await?;
+    let reply = execute_mock(
+        &find.to_os_str_lossy(),
+        path,
+        path_param,
+        query,
+        headers,
+        body,
+    )
+    .await?;
     Ok(reply)
 }
 
 async fn find_mock<'a>(
-    cur_dir: String,
+    cur_dir: BString,
     path: &[&str],
-) -> Result<(String, HashMap<String, String>), Error> {
+) -> Result<(BString, HashMap<String, String>), Error> {
     let mut cur_dir = cur_dir;
     let mut path = path;
     let mut path_param = HashMap::new();
     loop {
         let is_file = path.len() == 1;
         let target = path[0];
-        let mut dir = fs::read_dir(&cur_dir).await?;
+        let mut dir = fs::read_dir(cur_dir.to_os_str_lossy()).await?;
 
         let mut match_dir = None;
         let mut wildcard = None;
@@ -109,23 +118,18 @@ async fn find_mock<'a>(
             _ => None,
         };
 
+        cur_dir.push(b'/');
         match (find, is_file) {
             (None, _) => {
-                cur_dir.extend("/".chars().chain(target.chars()));
+                cur_dir.extend_from_slice(target.as_bytes());
                 break Err(Error::NotFound(cur_dir));
             }
             (Some(entry), true) => {
-                cur_dir.extend(
-                    "/".chars()
-                        .chain(entry.file_name().to_string_lossy().chars()),
-                );
+                cur_dir.extend_from_slice(entry.file_name().as_bytes());
                 break Ok((cur_dir, path_param));
             }
             (Some(entry), false) => {
-                cur_dir.extend(
-                    "/".chars()
-                        .chain(entry.file_name().to_string_lossy().chars()),
-                );
+                cur_dir.extend_from_slice(entry.file_name().as_bytes());
                 path = &path[1..]
             }
         }
@@ -133,7 +137,7 @@ async fn find_mock<'a>(
 }
 
 async fn execute_mock(
-    script: String,
+    script: &OsStr,
     path: FullPath,
     path_param: HashMap<String, String>,
     query: HashMap<String, String>,
@@ -191,7 +195,7 @@ fn headers2map(headers: &HeaderMap) -> HashMap<String, BString> {
 #[derive(Debug, thiserror::Error)]
 enum Error {
     #[error("mock path:{0} not found")]
-    NotFound(String),
+    NotFound(BString),
     #[error("{0}")]
     Io(#[from] std::io::Error),
     #[error("{0}")]
