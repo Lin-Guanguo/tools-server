@@ -1,5 +1,6 @@
 use bstr::{BString, ByteSlice};
 use rlua::Lua;
+use std::os::unix::prelude::OsStrExt;
 use std::{collections::HashMap, path::Path};
 use tokio::fs;
 use warp::path::FullPath;
@@ -13,6 +14,7 @@ use crate::Reply;
 const MOCK_DIR: &str = "./mock";
 
 const LUA_ARGS_PATH: &str = "path";
+const LUA_ARGS_PATH_PARAM: &str = "path_param";
 const LUA_ARGS_QUERY: &str = "query";
 const LUA_ARGS_HEADER: &str = "header";
 const LUA_ARGS_BODY: &str = "body";
@@ -47,44 +49,66 @@ async fn mock_inner(
     body: Bytes,
 ) -> Result<Reply, Error> {
     let path_split = path.as_str().split('/').collect::<Vec<_>>();
-    let mock = find_mock(
+    let (find, path_param) = find_mock(
         MOCK_DIR.into(),
         &path_split[2..], /* skip "" and "mock" */
     )
     .await?;
-    let reply = execute_mock(mock, path, query, headers, body).await?;
+    let reply = execute_mock(find, path, path_param, query, headers, body).await?;
     Ok(reply)
 }
 
-async fn find_mock(cur_dir: String, path: &[&str]) -> Result<String, Error> {
+async fn find_mock<'a>(
+    cur_dir: String,
+    path: &[&str],
+) -> Result<(String, HashMap<String, String>), Error> {
     let mut cur_dir = cur_dir;
     let mut path = path;
+    let mut path_param = HashMap::new();
     loop {
         let is_file = path.len() == 1;
         let target = path[0];
         let mut dir = fs::read_dir(&cur_dir).await?;
 
-        let mut wildcard = None;
         let mut match_dir = None;
+        let mut wildcard = None;
 
         while let Some(entry) = dir.next_entry().await? {
-            if (is_file && entry.file_type().await?.is_file())
-                || (!is_file && entry.file_type().await?.is_dir())
-            {
+            let file_type = entry.file_type().await?;
+            if (is_file && file_type.is_file()) || (!is_file && file_type.is_dir()) {
                 let file_name = entry.file_name();
-                let base_name = is_file
-                    .then(|| Path::new(&file_name).file_stem().unwrap_or(&file_name))
-                    .unwrap_or(&file_name);
-
+                let base_name = if is_file {
+                    Path::new(&file_name).file_stem().unwrap_or(&file_name)
+                } else {
+                    &file_name
+                };
                 if base_name == target {
                     match_dir.replace(entry);
                     break;
-                } else if base_name == "_" {
+                } else if base_name.as_bytes()[0] == b'_' {
                     wildcard.replace(entry);
                 }
             }
         }
-        let find = match_dir.or(wildcard);
+
+        let find = match (match_dir, wildcard) {
+            (Some(e), _) => Some(e),
+            (None, Some(e)) => {
+                let file_name = e.file_name();
+                let base_name = if is_file {
+                    Path::new(&file_name).file_stem().unwrap_or(&file_name)
+                } else {
+                    &file_name
+                };
+                if base_name.len() > 1 {
+                    let param_name = base_name.to_string_lossy()[1..].to_string();
+                    path_param.insert(param_name, target.into());
+                }
+                Some(e)
+            }
+            _ => None,
+        };
+
         match (find, is_file) {
             (None, _) => {
                 cur_dir.extend("/".chars().chain(target.chars()));
@@ -93,14 +117,14 @@ async fn find_mock(cur_dir: String, path: &[&str]) -> Result<String, Error> {
             (Some(entry), true) => {
                 cur_dir.extend(
                     "/".chars()
-                        .chain(entry.file_name().to_str().unwrap().chars()),
+                        .chain(entry.file_name().to_string_lossy().chars()),
                 );
-                break Ok(cur_dir);
+                break Ok((cur_dir, path_param));
             }
             (Some(entry), false) => {
                 cur_dir.extend(
                     "/".chars()
-                        .chain(entry.file_name().to_str().unwrap().chars()),
+                        .chain(entry.file_name().to_string_lossy().chars()),
                 );
                 path = &path[1..]
             }
@@ -109,13 +133,14 @@ async fn find_mock(cur_dir: String, path: &[&str]) -> Result<String, Error> {
 }
 
 async fn execute_mock(
-    mock: String,
+    script: String,
     path: FullPath,
+    path_param: HashMap<String, String>,
     query: HashMap<String, String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Reply, Error> {
-    let script = fs::read(mock).await?;
+    let script = fs::read(script).await?;
     let task = tokio::task::spawn_blocking(move || {
         let vm = Lua::new();
         vm.context(|ctx| -> Result<Reply, Error> {
@@ -124,6 +149,7 @@ async fn execute_mock(
             globals.set(LUA_ARGS_QUERY, query)?;
             globals.set(LUA_ARGS_HEADER, headers2map(&headers))?;
             globals.set(LUA_ARGS_BODY, body.as_bstr())?;
+            globals.set(LUA_ARGS_PATH_PARAM, path_param)?;
 
             ctx.load(&script).set_name(path.as_str())?.exec()?;
 
@@ -184,19 +210,19 @@ mod tests {
     async fn route() {
         let ret = find_mock(MOCK_DIR.into(), &["test", "echo"]).await;
         assert!(matches!(ret, Ok(_)));
-        assert_eq!(ret.unwrap(), "./mock/test/echo.lua");
+        assert_eq!(ret.unwrap().0, "./mock/test/echo.lua");
 
         let ret = find_mock(MOCK_DIR.into(), &["test", "echo", "hello"]).await;
         assert!(matches!(ret, Ok(_)));
-        assert_eq!(ret.unwrap(), "./mock/test/echo/hello.lua");
+        assert_eq!(ret.unwrap().0, "./mock/test/echo/hello.lua");
 
         let ret = find_mock(MOCK_DIR.into(), &["test", "nothing"]).await;
         assert!(matches!(ret, Ok(_)));
-        assert_eq!(ret.unwrap(), "./mock/test/_.lua");
+        assert_eq!(ret.unwrap().0, "./mock/test/_.lua");
 
         let ret = find_mock(MOCK_DIR.into(), &["test", "nothing", "wildcard"]).await;
         assert!(matches!(ret, Ok(_)));
-        assert_eq!(ret.unwrap(), "./mock/test/_/wildcard.lua");
+        assert_eq!(ret.unwrap().0, "./mock/test/_param/_p2.lua");
 
         let ret = find_mock(MOCK_DIR.into(), &["test", "echo", "nomatch"]).await;
         assert!(matches!(ret, Err(_)));
