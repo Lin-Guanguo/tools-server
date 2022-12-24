@@ -26,8 +26,8 @@ pub async fn command(
         headers
             .get_all(h)
             .iter()
-            .flat_map(|s| s.to_str().unwrap().split(","))
-            .map(|s| replace_variable(&vars, s))
+            .flat_map(|s| s.to_str().unwrap().split(','))
+            .map(|s| replace_variable(vars, s))
             .flat_map(|s| shell_words::split(&s).unwrap())
             .collect::<Vec<_>>()
     };
@@ -37,7 +37,7 @@ pub async fn command(
     vars.extend(
         parse_header_args("vars", &vars)
             .iter()
-            .map(|s| s.split_once("="))
+            .map(|s| s.split_once('='))
             .filter_map(|kv| kv.map(|(k, v)| (k.to_string(), v.to_string()))),
     );
     let mut body = body;
@@ -178,7 +178,7 @@ fn replace_variable<'a>(
                 .unwrap_or_else(|| format!("${{{}}}", var.as_str()))
         } else if let Some(fname) = cap.name("fn") {
             let input = cap.name("input").unwrap();
-            let input = replace_variable(&vars, input.as_str());
+            let input = replace_variable(vars, input.as_str());
             let input = input.as_ref();
             match fname.as_str() {
                 "base64" => base64(input),
