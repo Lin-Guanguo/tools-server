@@ -162,7 +162,7 @@ fn replace_variable<'a>(
             r#"(?x)
                 ( \$(?P<var1>[0-9A-Za-z_]+) ) |
                 ( \$\{\s*(?P<var2>[0-9A-Za-z_]+)\s*\} ) |
-                ( \$\{\s* (?P<fn>[0-9A-Za-z_]+) \( \s*(?P<input>[^\)]*)\s* \) \s*\} )
+                ( \$\{\s* (?P<fn>[0-9A-Za-z_]+) \( \s*(?P<finput>[^\)]*)\s* \) \s*\} )
             "#,
         ).unwrap();
     );
@@ -177,12 +177,12 @@ fn replace_variable<'a>(
                 .cloned()
                 .unwrap_or_else(|| format!("${{{}}}", var.as_str()))
         } else if let Some(fname) = cap.name("fn") {
-            let input = cap.name("input").unwrap();
-            let input = replace_variable(vars, input.as_str());
-            let input = input.as_ref();
+            let finput = cap.name("finput").unwrap();
+            let finput = replace_variable(vars, finput.as_str());
+            let finput = finput.as_ref();
             match fname.as_str() {
-                "base64" => base64(input),
-                fname => format!("${{{}({})}}", fname, input),
+                "base64" => base64(finput),
+                fname => format!("${{{}({})}}", fname, finput),
             }
         } else {
             panic!("inner error")
