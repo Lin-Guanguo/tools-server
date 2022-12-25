@@ -14,14 +14,17 @@ use crate::Reply;
 
 const MOCK_DIR: &str = "./mock";
 
-const LUA_ARGS_PATH: &str = "path";
-const LUA_ARGS_PATH_PARAM: &str = "path_param";
-const LUA_ARGS_QUERY: &str = "query";
-const LUA_ARGS_HEADER: &str = "header";
-const LUA_ARGS_BODY: &str = "body";
-const LUA_RESP_STATUS: &str = "resp_status";
-const LUA_RESP_HEADER: &str = "resp_header";
-const LUA_RESP_BODY: &str = "resp_body";
+const LUA_REQ_TABLE: &str = "req";
+const LUA_REQ_PATH: &str = "path";
+const LUA_REQ_PATH_PARAM: &str = "path_param";
+const LUA_REQ_QUERY: &str = "query";
+const LUA_REQ_HEADER: &str = "header";
+const LUA_REQ_BODY: &str = "body";
+
+const LUA_RESP_TABLE: &str = "resp";
+const LUA_RESP_STATUS: &str = "status";
+const LUA_RESP_HEADER: &str = "header";
+const LUA_RESP_BODY: &str = "body";
 
 pub async fn mock(
     path: FullPath,
@@ -70,7 +73,7 @@ async fn mock_inner(
 async fn find_mock<'a>(
     cur_dir: BString,
     path: &[&str],
-) -> Result<(BString, HashMap<String, String>), Error> {
+) -> Result<(BString, HashMap<BString, BString>), Error> {
     let mut cur_dir = cur_dir;
     let mut path = path;
     let mut path_param = HashMap::new();
@@ -110,7 +113,7 @@ async fn find_mock<'a>(
                     &file_name
                 };
                 if base_name.len() > 1 {
-                    let param_name = base_name.to_string_lossy()[1..].to_string();
+                    let param_name = base_name.as_bytes()[1..].into();
                     path_param.insert(param_name, target.into());
                 }
                 Some(e)
@@ -139,7 +142,7 @@ async fn find_mock<'a>(
 async fn execute_mock(
     script: &OsStr,
     path: FullPath,
-    path_param: HashMap<String, String>,
+    path_param: HashMap<BString, BString>,
     query: HashMap<String, String>,
     headers: HeaderMap,
     body: Bytes,
@@ -149,19 +152,22 @@ async fn execute_mock(
         let vm = Lua::new();
         vm.context(|ctx| -> Result<Reply, Error> {
             let globals = ctx.globals();
-            globals.set(LUA_ARGS_PATH, path.as_str())?;
-            globals.set(LUA_ARGS_QUERY, query)?;
-            globals.set(LUA_ARGS_HEADER, headers2map(&headers))?;
-            globals.set(LUA_ARGS_BODY, body.as_bstr())?;
-            globals.set(LUA_ARGS_PATH_PARAM, path_param)?;
+            let req = ctx.create_table()?;
+            let resp = ctx.create_table()?;
+            req.set(LUA_REQ_PATH, path.as_str())?;
+            req.set(LUA_REQ_QUERY, query)?;
+            req.set(LUA_REQ_HEADER, headers2map(&headers))?;
+            req.set(LUA_REQ_BODY, body.as_bstr())?;
+            req.set(LUA_REQ_PATH_PARAM, path_param)?;
+            globals.set(LUA_REQ_TABLE, req)?;
+            globals.set(LUA_RESP_TABLE, resp)?;
 
             ctx.load(&script).set_name(path.as_str())?.exec()?;
 
-            let status = globals
-                .get::<_, Option<u16>>(LUA_RESP_STATUS)?
-                .unwrap_or(200);
-            let header = globals.get::<_, Option<HashMap<String, BString>>>(LUA_RESP_HEADER)?;
-            let body = globals
+            let resp = globals.get::<_, rlua::Table>(LUA_RESP_TABLE)?;
+            let status = resp.get::<_, Option<u16>>(LUA_RESP_STATUS)?.unwrap_or(200);
+            let header = resp.get::<_, Option<HashMap<String, BString>>>(LUA_RESP_HEADER)?;
+            let body = resp
                 .get::<_, Option<BString>>(LUA_RESP_BODY)?
                 .map(Vec::from)
                 .unwrap_or_else(Vec::new);
@@ -178,10 +184,10 @@ async fn execute_mock(
     task.await.map_err(|_| Error::TokioBlockJoin)?
 }
 
-fn headers2map(headers: &HeaderMap) -> HashMap<String, BString> {
-    let mut map: HashMap<String, BString> = HashMap::new();
+fn headers2map(headers: &HeaderMap) -> HashMap<BString, BString> {
+    let mut map: HashMap<BString, BString> = HashMap::new();
     for (name, value) in headers.iter() {
-        let entry = map.entry(name.to_string());
+        let entry = map.entry(name.as_str().into());
         entry
             .and_modify(|h| {
                 h.push(b',');
