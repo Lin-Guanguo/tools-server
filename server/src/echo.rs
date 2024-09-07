@@ -6,8 +6,9 @@ use axum::{
 };
 use serde::Serialize;
 use std::collections::HashMap;
+use tracing::info;
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct RequestInfo {
     method: String,
     uri: String,
@@ -41,6 +42,8 @@ pub async fn echo(
         query_params,
         body: body_str,
     };
+
+    info!(request = ?request_info);
 
     Json(request_info)
 }
