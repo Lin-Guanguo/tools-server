@@ -12,6 +12,7 @@ async fn main() {
         .with_file(true)
         .with_line_number(true)
         .with_thread_ids(true)
+        .with_ansi(false)
         .finish();
 
     subscriber.init();
